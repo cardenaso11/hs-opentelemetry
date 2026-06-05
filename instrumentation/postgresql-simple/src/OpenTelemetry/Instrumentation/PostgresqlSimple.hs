@@ -92,6 +92,7 @@ import Database.PostgreSQL.Simple.Internal (
   Connection (Connection, connectionHandle),
   withConnection,
  )
+import Database.PostgreSQL.Simple.Types (fromQuery)
 import GHC.Stack
 import OpenTelemetry.Attributes.Key (unkey)
 import OpenTelemetry.Resource ((.=), (.=?))
@@ -153,14 +154,15 @@ extractOperationName stmt =
        else Just $ T.toUpper $ TE.decodeUtf8 keyword
 
 
--- | Function to help with wrapping functions in postgresql-simple
+-- | Function to help with wrapping functions in postgresql-simple.
+-- Takes the query template (with @?@ placeholders) rather than the interpolated statement.
 pgsSpan :: HasCallStack => Connection -> C.ByteString -> IO a -> IO a
-pgsSpan conn statement f = do
+pgsSpan conn template f = do
   connAttr <- staticConnectionAttributes conn
   dbName <- maybe "unknown db" TE.decodeUtf8 <$> withConnection conn LibPQ.db
   opts <- getSemanticsOptions
-  let stmtText = TE.decodeUtf8 statement
-      mOpName = extractOperationName statement
+  let stmtText = TE.decodeUtf8 template
+      mOpName = extractOperationName template
       stableAttrs =
         H.fromList $
           (unkey SC.db_query_text, toAttribute stmtText)
@@ -192,16 +194,14 @@ query_ = queryWith_ Simple.fromRow
 
 -- | Instrumented version of 'Simple.queryWith'
 queryWith :: (HasCallStack, MonadIO m, ToRow q) => Simple.RowParser r -> Connection -> Query -> q -> m [r]
-queryWith parser conn template qs = liftIO $ do
-  statement <- formatQuery conn template qs
-  pgsSpan conn statement $ Simple.queryWith parser conn template qs
+queryWith parser conn template qs = liftIO $
+  pgsSpan conn (fromQuery template) $ Simple.queryWith parser conn template qs
 
 
 -- | Instrumented version of 'Simple.queryWith_'
 queryWith_ :: MonadIO m => Simple.RowParser r -> Connection -> Query -> m [r]
-queryWith_ parser conn query = liftIO $ do
-  statement <- formatQuery conn query ()
-  pgsSpan conn statement $ Simple.queryWith_ parser conn query
+queryWith_ parser conn q = liftIO $
+  pgsSpan conn (fromQuery q) $ Simple.queryWith_ parser conn q
 
 
 -- | Instrumented version of 'Simple.fold'
@@ -221,9 +221,8 @@ foldWithOptions opts = foldWithOptionsAndParser opts Simple.fromRow
 
 -- | Instrumented version of 'Simple.foldWithOptionsAndParser'
 foldWithOptionsAndParser :: (HasCallStack, MonadUnliftIO m, ToRow params) => FoldOptions -> Simple.RowParser row -> Connection -> Query -> params -> a -> (a -> row -> m a) -> m a
-foldWithOptionsAndParser opts parser conn template qs a f = withRunInIO $ \runInIO -> do
-  statement <- formatQuery conn template qs
-  pgsSpan conn statement $ Simple.foldWithOptionsAndParser opts parser conn template qs a (\a' r -> runInIO (f a' r))
+foldWithOptionsAndParser opts parser conn template qs a f = withRunInIO $ \runInIO ->
+  pgsSpan conn (fromQuery template) $ Simple.foldWithOptionsAndParser opts parser conn template qs a (\a' r -> runInIO (f a' r))
 
 
 -- | Instrumented version of 'Simple.fold_'
@@ -243,9 +242,8 @@ foldWithOptions_ opts = foldWithOptionsAndParser_ opts Simple.fromRow
 
 -- | Instrumented version of 'Simple.foldWithOptionsAndParser_'
 foldWithOptionsAndParser_ :: MonadUnliftIO m => FoldOptions -> Simple.RowParser r -> Connection -> Query -> a -> (a -> r -> m a) -> m a
-foldWithOptionsAndParser_ opts parser conn q a f = withRunInIO $ \runInIO -> do
-  statement <- formatQuery conn q ()
-  pgsSpan conn statement $ Simple.foldWithOptionsAndParser_ opts parser conn q a (\a' r -> runInIO (f a' r))
+foldWithOptionsAndParser_ opts parser conn q a f = withRunInIO $ \runInIO ->
+  pgsSpan conn (fromQuery q) $ Simple.foldWithOptionsAndParser_ opts parser conn q a (\a' r -> runInIO (f a' r))
 
 
 {- | Instrumented version of 'Simple.forEach'
@@ -281,28 +279,24 @@ returning = returningWith Simple.fromRow
 -- | A version of 'returning' taking parser as argument
 returningWith :: (HasCallStack, MonadIO m, ToRow q) => Simple.RowParser r -> Connection -> Query -> [q] -> m [r]
 returningWith _parser _conn _q [] = pure []
-returningWith parser conn q qs = liftIO $ do
-  statement <- formatMany conn q qs
-  pgsSpan conn statement $ Simple.returningWith parser conn q qs
+returningWith parser conn q qs = liftIO $
+  pgsSpan conn (fromQuery q) $ Simple.returningWith parser conn q qs
 
 
 -- | Instrumented version of 'Simple.execute'
 execute :: (HasCallStack, MonadIO m, ToRow q) => Connection -> Query -> q -> m Int64
-execute conn template qs = liftIO $ do
-  statement <- formatQuery conn template qs
-  pgsSpan conn statement $ Simple.execute conn template qs
+execute conn template qs = liftIO $
+  pgsSpan conn (fromQuery template) $ Simple.execute conn template qs
 
 
 -- | Instrumented version of 'Simple.execute_'
 execute_ :: MonadIO m => Connection -> Query -> m Int64
-execute_ conn q = liftIO $ do
-  statement <- formatQuery conn q ()
-  pgsSpan conn statement $ Simple.execute_ conn q
+execute_ conn q = liftIO $
+  pgsSpan conn (fromQuery q) $ Simple.execute_ conn q
 
 
 -- | Instrumented version of 'Simple.executeMany'
 executeMany :: (HasCallStack, MonadIO m, ToRow q) => Connection -> Query -> [q] -> m Int64
 executeMany _conn _q [] = pure 0
-executeMany conn q qs = liftIO $ do
-  statement <- formatMany conn q qs
-  pgsSpan conn statement $ Simple.executeMany conn q qs
+executeMany conn q qs = liftIO $
+  pgsSpan conn (fromQuery q) $ Simple.executeMany conn q qs
